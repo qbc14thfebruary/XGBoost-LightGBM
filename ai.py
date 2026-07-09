@@ -1,11 +1,11 @@
 # ==========================================
 # 1. CÀI ĐẶT VÀ KHAI BÁO THƯ VIỆN
 # ==========================================
-!pip install pandas numpy pandas-ta lightgbm xgboost
+!pip install pandas numpy pandas-ta-classic lightgbm xgboost
 
 import pandas as pd
 import numpy as np
-import pandas_ta as ta
+import pandas_ta_classic  as ta
 import lightgbm as lgb
 import xgboost as xgb
 from sklearn.metrics import classification_report, accuracy_score
