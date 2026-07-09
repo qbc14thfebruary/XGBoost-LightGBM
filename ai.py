@@ -1,7 +1,7 @@
 # ==========================================
 # 1. CÀI ĐẶT VÀ KHAI BÁO THƯ VIỆN
 # ==========================================
-!pip install pandas-ta lightgbm xgboost
+!pip install pandas numpy pandas-ta lightgbm xgboost
 
 import pandas as pd
 import numpy as np
