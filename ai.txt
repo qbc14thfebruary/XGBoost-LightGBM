@@ -1,0 +1,155 @@
+TÀI LIỆU DỰ ÁN: HỆ THỐNG AI SIGNAL BOT FOREX (MT5 TO TELEGRAM)
+1. Tổng Quan Dự Án 
+	Dự án nhằm xây dựng một hệ thống phần mềm chạy ngầm tự động (Python Engine) kết nối trực tiếp với nền tảng MetaTrader 5 (MT5). 
+	Hệ thống này không tham gia giao dịch trực tiếp (Không Auto-trade) mà đóng vai trò là một Nhà Phân Tích Kỹ Thuật Số, liên tục quét thị trường theo thời gian thực, sử dụng các mô hình học máy tiên tiến để tính toán xác suất xu hướng và phát tín hiệu cảnh báo chất lượng cao kèm các thông số quản trị vốn (Entry, SL, TP) về Telegram Channel/Group.
+2. Kiến Trúc Hệ Thống & Luồng Dữ Liệu (Data Flow)
+	Hệ thống được module hóa thành 4 khối chức năng độc lập nhằm đảm bảo tính mở rộng và dễ bảo trì:
+	text
+		+----------------+       (1) Kéo dữ liệu nến thô       +-----------------------+
+
+		|  MT5 Terminal  | ----------------------------------> | Khối A: MT5 Connector |
+		+----------------+                                     +-----------------------+
+				^                                                          |
+
+				| (Check Spread)                                           | (2) Truyền dataframe
+				v                                                          v
+		+----------------+       (4) Đạt 3 lớp màng lọc        +-----------------------+
+
+		| Bộ Lọc Thực Tế | <---------------------------------- | Khối C: Bộ Não AI     |
+		+----------------+                                     +-----------------------+
+				|                                                          ^
+
+				| (Vượt qua bộ lọc)                                        | (3) Nạp vector đặc trưng
+				v                                                          |
+		+----------------+                                     +-----------------------+
+
+		|  Telegram Bot  |                                     | Khối B: Feature Eng.  |
+		+----------------+                                     +-----------------------+
+
+	Chi tiết các khối chức năng:
+		Khối A (MT5 Data Connector): Thực hiện đăng nhập, duy trì kết nối an toàn với máy chủ tài khoản MT5. Cứ mỗi chu kỳ của Timeframe thiết lập (ví dụ: ngay khi nến M15 vừa đóng cửa), khối này tự động kéo dữ liệu của \(N\) cây nến quá khứ.
+		Khối B (Feature Engineer): Biến dữ liệu giá thô (OHLC) thành các đặc trưng hành vi (Features) như: Thân nến/Bóng nến, độ biến động (ATR), các đường trung bình động (MA), cấu trúc đỉnh đáy và tích hợp đa khung thời gian (Multi-timeframe) (Nhồi thêm bối cảnh xu hướng của H1/H4 để định hướng cho M15).
+		Khối C (AI Inference Engine - Bộ não AI): Sử dụng các thuật toán cây quyết định tăng cường mạnh mẽ nhất cho dữ liệu bảng (XGBoost / LightGBM). Khối này xử lý bài toán dưới dạng Phân loại (Classification) để trả về xác suất chính xác của 3 trạng thái: Tăng, Giảm, hoặc Đi ngang (Sideway) thông qua hàm predict_proba().
+		Khối D (Telegram Notifier & Bộ lọc chống nhiễu): Đóng gói tín hiệu, tính toán SL/TP khoa học và thực hiện gửi tin nhắn thông qua Telegram Bot API.
+
+3. Giải Pháp Xác Thực AI & Chống Tín Hiệu Giả Mạo (Anti-Fake Filters)
+	Để giải quyết triệt để bài toán "tín hiệu ảo/nhiễu thị trường" của AI, hệ thống áp dụng Cơ chế bộ lọc 3 lớp bảo vệ nghiêm ngặt:
+		Lớp 1: Ngưỡng xác suất toán học thực (Probability Threshold)
+			Mô hình không đưa ra quyết định nhị phân (Mua/Bán) mà đưa ra tỷ lệ phần trăm tự tin.
+			Chốt chặn: Hệ thống cấu hình một ngưỡng cứng (ví dụ: Xác suất >= 65%). Mọi phân tích có độ tự tin lơ lửng (51% - 64%) do thị trường nhiễu sẽ bị loại bỏ hoàn toàn trong im lặng.
+		Lớp 2: Hiệu chuẩn mô hình (Model Calibration)
+			Khắc phục điểm yếu "quá tự tin" (Overconfidence) của thuật toán XGBoost/LightGBM bằng các kỹ thuật toán học như Platt Scaling hoặc Isotonic Regression.
+			Đảm bảo xác suất đầu ra của AI phản ánh chính xác tần suất chiến thắng thực tế khi backtest trong lịch sử.
+		Lớp 3: Bộ lọc môi trường thực tế (Rule-based Filter)
+			Cho dù AI báo độ tự tin lên tới 80%, tín hiệu vẫn sẽ bị Hủy bỏ nếu vi phạm các điều kiện thực tế của thị trường và sàn giao dịch:
+				1. Lọc giãn Spread (Sàn Exness và các sàn thả nổi): Hệ thống gọi lệnh mt5.symbol_info().spread tại giây đóng nến. 
+					Nếu spread bị giãn quá ngưỡng an toàn (ví dụ: > 1.5 - 2 pips), tín hiệu bị hủy để tránh rủi ro trượt giá Entry và quét SL.
+				2. Lọc Tin tức Kinh tế (News Avoidance): Tích hợp quét lịch kinh tế tự động (API ForexFactory/Economic Calendar). 
+					Hệ thống sẽ tự động đóng băng (Tắt bot) trong khoảng thời gian Trước 15 phút và Sau 15 phút của các tin tức tác động mạnh (Tin Đỏ như CPI, NFP, FOMC) để tránh bão thị trường phá vỡ cấu trúc kỹ thuật.
+
+4. Giải Thuật Tính Toán SL / TP & Quản Trị Rủi Ro
+	Hệ thống tính toán các vùng giá dựa trên cấu trúc hình học của nến và biên độ biến động, không sử dụng số pips cố định:
+		Entry (Giá vào lệnh): Lấy mức giá đóng cửa thực tế (Close) của cây nến vừa kết thúc.
+		Stop Loss (SL - Cắt lỗ):
+			Lệnh BUY: Đặt dưới đáy thấp nhất (Low) của cây nến vừa đóng (hoặc cụm nến gần nhất) + khoảng hao hụt an toàn (Buffer).
+			Lệnh SELL: Đặt trên đỉnh cao nhất (High) của cây nến vừa đóng + khoảng hao hụt an toàn.
+		Take Profit (TP - Chốt lời): Tự động tính toán dựa trên tỷ lệ Risk:Reward (R:R) mục tiêu được thiết lập trước (Ví dụ cấu hình R:R = 1:1.5 hoặc 1:2). Khoảng cách Entry -> TP = Khoảng cách Entry -> SL x 1.5.
+
+5. Thiết Kế Mẫu Tin Nhắn Telegram Xuất Bản
+	Tin nhắn gửi về điện thoại của thành viên nhóm/khách hàng được chuẩn hóa trực quan, ngắn gọn và đầy đủ thông tin:text🚨 TÍN HIỆU AI FOREX 🚨
+		🔹 Cặp tiền: EURUSD | Khung thời gian: M15
+		🕒 Thời gian: 2026-07-09 13:30 (Giờ hệ thống)
+
+		📈 Dự đoán: XU HƯỚNG TĂNG (BUY)
+		🎯 Độ tự tin AI: 74.2% (Ngưỡng lọc: 65%)
+
+		📊 THÔNG SỐ VÀO LỆNH (THAM KHẢO):
+		🟢 Entry: 1.08520 (Giá đóng nến hiện tại)
+		🔴 Stop Loss (SL): 1.08400 (Dưới đáy nến M15 gần nhất)
+		🔵 Take Profit (TP): 1.08700 (Tỷ lệ R:R = 1:1.5)
+
+		🔍 Bối cảnh nhanh: Cấu trúc tăng giá ngắn hạn được xác lập, lực mua mạnh, khung lớn H1/H4 đồng pha xu hướng.
+
+6. Tham Số Đầu Vào Cần Cấu Hình (Setup Checklist)Để triển khai hệ thống này, người vận hành chỉ cần chuẩn bị và điền các thông số vào file cấu hình config.json gồm:Thông tin sàn: Tài khoản MT5, Mật khẩu, Tên Server (Ví dụ: Exness-MT5-Real...).Thông tin cấu hình Bot: Symbol (Vàng, EURUSD...), Timeframe (M15, H1...).Thông tin kết nối Telegram: Telegram Token Bot, Chat ID (Của Group hoặc Channel nhận tin).File Bộ não AI: File mô hình đã được huấn luyện sẵn từ dữ liệu quá khứ (định dạng .json hoặc .pkl).
+	json5
+	{
+	  // ==========================================
+	  // KHỐI 1: CẤU HÌNH KẾT NỐI SÀN METATRADER 5
+	  // ==========================================
+	  "MT5_CONNECTION": {
+		"ACCOUNT_ID": 12345678,              // Số tài khoản giao dịch MT5 của sàn Exness
+		"PASSWORD": "your_secure_password",  // Mật khẩu master của tài khoản
+		"SERVER": "Exness-MT5-Real6",        // Máy chủ (Server) chính xác do Exness cấp
+		"SYMBOL": "EURUSD",                  // Mã sản phẩm cần quét tín hiệu (Ví dụ: EURUSD, XAUUSD)
+		"TIMEFRAME": "TIMEFRAME_M15",        // Khung thời gian làm việc chính của AI (M15, H1, H4...)
+		"DATA_LOOKBACK_BARS": 1000           // Số lượng nến quá khứ cần kéo về để làm mốc tính toán đặc trưng
+	  },
+
+	  // ==========================================
+	  // KHỐI 2: CẤU HÌNH GỬI THÔNG BÁO TELEGRAM
+	  // ==========================================
+	  "TELEGRAM_NOTIFIER": {
+		"BOT_TOKEN": "1234567890:ABCdefGhIJKlmNoPQRsTUVwxyZ", // Token của Bot tạo từ @BotFather
+		"CHAT_ID": "-100123456789",                           // ID của Kênh (Channel) hoặc Nhóm nhận tín hiệu
+		"NOTIFICATION_DELAY_SECONDS": 1                       // Thời gian trễ giữa các lần gửi tin tránh bị spam API
+	  },
+
+	  // ==========================================
+	  // KHỐI 3: CẤU HÌNH BỘ NÃO AI (MODEL SETTINGS)
+	  // ==========================================
+	  "AI_MODEL_SETTINGS": {
+		"MODEL_PATH": "models/xgboost_forex_v1.pkl", // Đường dẫn chứa file bộ não AI đã được train sẵn
+		"MODEL_TYPE": "XGBOOST",                     // Loại thuật toán định dạng (XGBOOST hoặc LIGHTGBM)
+		"PROBABILITY_THRESHOLD": 0.65,               // MÀNG LỌC LỚP 1: Tỷ lệ tự tin tối thiểu (65%). Thấp hơn sẽ HỦY tín hiệu
+		"CALIBRATION_METHOD": "ISOTONIC_REGRESSION"  // MÀNG LỌC LỚP 2: Thuật toán hiệu chuẩn toán học để chống AI "quá ảo tưởng"
+	  },
+
+	  // ==========================================
+	  // KHỐI 4: BỘ LỌC CHỐNG TÍN HIỆU GIẢ MẠO (ANTI-FAKE FILTERS)
+	  // ==========================================
+	  "ANTI_FAKE_FILTERS": {
+		// --- Lọc điều kiện Sàn ---
+		"MAX_ALLOWED_SPREAD_POINTS": 15,     // MÀNG LỌC LỚP 3.1: Spread tối đa chấp nhận (15 points = 1.5 pips). Cao hơn sẽ HỦY lệnh
+		"MIN_REQUIRED_VOLUME": 50,           // Khối lượng giao dịch (Tick Volume) tối thiểu của nến để đảm bảo có thanh khoản thực
+		"ATR_PERIOD": 14,                    // Chu kỳ của chỉ báo ATR dùng để đo biến động trung bình của thị trường
+		"MIN_ATR_MULTIPLIER": 0.5,           // Biên độ nến hiện tại phải lớn hơn 0.5 lần ATR trung bình (Tránh lúc thị trường đóng băng)
+
+		// --- Lọc điều kiện Tin tức Kinh tế (MÀNG LỌC LỚP 3.2) ---
+		"NEWS_FILTER": {
+		  "ENABLE_NEWS_FILTER": true,        // Bật/Tắt tính năng quét tin tức (true = Bật, false = Tắt)
+		  "NEWS_API_URL": "https://forexfactory.com", // API để cào dữ liệu lịch kinh tế thời gian thực
+		  "NEWS_IMPACT_LEVELS": ["HIGH", "MEDIUM"],                  // Các cấp độ tin cần né (HIGH = Tin đỏ, MEDIUM = Tin vàng)
+		  "BLOCK_BEFORE_MINUTES": 15,        // Đóng băng hệ thống, KHÔNG phát tín hiệu TRƯỚC khi tin ra 15 phút
+		  "BLOCK_AFTER_MINUTES": 15          // Đóng băng hệ thống, KHÔNG phát tín hiệu SAU khi tin ra 15 phút
+		}
+	  },
+
+	  // ==========================================
+	  // KHỐI 5: GIẢI THUẬT TÍNH SL/TP & QUẢN TRỊ RỦI RO
+	  // ==========================================
+	  "RISK_MANAGEMENT": {
+		"RISK_REWARD_RATIO": 1.5,            // Tỷ lệ R:R mục tiêu (1.5 nghĩa là mục tiêu ăn 1.5 lần khoảng cách lỗ)
+		
+		// --- Cấu hình thuật toán Stop Loss (Cắt lỗ) ---
+		"STOP_LOSS": {
+		  "STRATEGY": "CANDLE_EXTREMA",      // Chiến lược tính: Dựa theo đỉnh/đáy hình học của nến
+		  "LOOKBACK_BARS_FOR_SL": 3,         // Số lượng cây nến gần nhất cần quét để tìm điểm Cao nhất/Thấp nhất
+		  "BUFFER_PIPS": 2.0,                // Khoảng cách cộng thêm (2 pips) ngoài râu nến để chống cá mập quét SL
+		  "MIN_SL_PIPS": 5.0,                // Chốt chặn cứng: SL tối thiểu không được nhỏ hơn 5 pips (Tránh SL quá ngắn gây nhiễu)
+		  "MAX_SL_PIPS": 30.0                // Chốt chặn cứng: SL tối đa không vượt quá 30 pips (Bảo vệ tài khoản khi nến quá dài)
+		},
+
+		// --- Cấu hình thuật toán Take Profit (Chốt lời) ---
+		"TAKE_PROFIT": {
+		  "STRATEGY": "FIXED_RR",            // Chiến lược tính: Nhân định biên theo tỷ lệ RISK_REWARD_RATIO ở trên
+		  "MAX_TP_PIPS": 60.0                // Chốt chặn cứng: TP tối đa không được vượt quá 60 pips đối với khung ngắn hạn M15
+		}
+	  }
+	}
+	
+TÓM LẠI: LỘ TRÌNH KHUYÊN NÊN LÀM
+Bước 1: Cài MT5 trên máy cá nhân, cài Python, cài thư viện MetaTrader5.
+Bước 2: Viết script Python kéo dữ liệu quá khứ từ MT5 ra file CSV.
+Bước 3: Dùng Jupyter Notebook, train XGBoost/LightGBM trên file CSV đó xem kết quả thế nào (Backtest tĩnh). Nếu đã tìm được bộ Feature và tham số mang lại lợi nhuận ảo ổn định -> Lưu lại code.
+Bước 4: Viết lại thành 1 script Python tự động (gộp cả phần lấy data, train, predict và gửi lệnh qua MT5).
+Bước 5: Chạy script trên tài khoản Demo của MT5 ít nhất 1-2 tháng (Forward test) để xem thực tế có giống backtest không.
